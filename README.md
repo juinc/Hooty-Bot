@@ -22,7 +22,8 @@
   <img src="https://img.shields.io/badge/Python-3.10+-blue?style=flat-square">
 </p>
 
-
+## ‼️ Disclaimer
+This bot was created for **my** personal use in my Discord communities. Taking this into account, any use, redistribution, modification or other action done with the code must be done under my approval, the code was only posted and open sourced on Github for easier redistribution to my portfolio.
 ## 🌟 Features
 
 - **Welcome & Goodbye System**: Customizable messages, embeds, DMs, and logging.
