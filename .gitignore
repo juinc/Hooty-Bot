@@ -1,0 +1,23 @@
+# Bot Running Data
+src/config/*
+src/database/*
+src/logs/*
+src/backups/*
+
+# Secret files
+.env
+
+# Python and VSC Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.swp
+*.swo
+*.swn
+*.bak
+*.tmp
+*.log
+*.DS_Store
+*.vscode/
+archive/

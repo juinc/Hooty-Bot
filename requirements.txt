@@ -1,0 +1,7 @@
+discord.py
+python-dotenv
+pyyaml
+aiofiles
+Pillow
+pytz
+psutil
