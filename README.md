@@ -7,7 +7,7 @@
 <!-- ╚═╝  ╚═╝ ╚═════╝  ╚═════╝    ╚═╝      ╚═╝       ╚═════╝  ╚═════╝    ╚═╝    -->
 <p align="center">
   <!-- <img width="800" height="250" alt="Banner" src="https://github.com/user-attachments/assets/b3be5951-4533-4e97-bc58-05dbd6eea284" /> -->
-  <img src="https://github.com/user-attachments/assets/b3be5951-4533-4e97-bc58-05dbd6eea28" alt="Hooty Bot Banner" width="600"/>
+  <img src="https://github.com/user-attachments/assets/b3be5951-4533-4e97-bc58-05dbd6eea284" alt="Hooty Bot Banner" width="600"/>
 </p>
 
 <h1 align="center">🦉 Hooty Bot</h1>
