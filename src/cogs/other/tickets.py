@@ -473,7 +473,7 @@ class TicketSystemCog(commands.Cog):
         
         return (permissions_cog.has_permission(member, 'permissions.tickets.close') or
                 permissions_cog.has_permission(member, 'permissions.tickets.admin') or
-                permissions_cog.has_permission(member, 'permissions.admin'))
+                permissions_cog.has_permission(member, 'permissions.omni'))
 
     def _generate_ticket_id(self) -> str:
         """Generate a unique ticket ID"""

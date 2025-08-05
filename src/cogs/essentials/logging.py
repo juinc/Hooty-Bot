@@ -143,6 +143,9 @@ class LogManager:
         
         self.data = self.load_data()
         
+         # Migrate excluded channels to string format
+        self.migrate_excluded_channels()
+        
         # In-memory tracking of custom logs (not saved to config)
         self.custom_logs = {}  # {custom_log_name: {"initialized": True, "channel_id": None}}
         
@@ -269,11 +272,24 @@ class LogManager:
             "event": "[{timestamp}] [{event_type}] [{guild}] {details}"
         }
     
+    def migrate_excluded_channels(self):
+        """Migrate excluded channel IDs from integers to strings"""
+        try:
+            for guild_id_str, guild_data in self.data.get("guilds", {}).items():
+                excluded_channels = guild_data.get("config", {}).get("excluded_channels", [])
+                # Convert any integer channel IDs to strings
+                migrated_channels = [str(channel_id) for channel_id in excluded_channels]
+                guild_data["config"]["excluded_channels"] = migrated_channels
+            self.save_data()
+            print("Migrated excluded channels to string format")
+        except Exception as e:
+            print(f"Error migrating excluded channels: {e}")
+    
     def is_channel_excluded(self, guild_id: int, channel_id: int) -> bool:
         """Check if a channel is completely excluded from logging"""
         try:
             guild_data = self.get_guild_data(guild_id)
-            return channel_id in guild_data["config"]["excluded_channels"]
+            return str(channel_id) in guild_data["config"]["excluded_channels"]  # Convert to string for comparison
         except Exception as e:
             print(f"Error checking channel exclusion: {e}")
             return False
@@ -355,19 +371,21 @@ class LogManager:
         """Add a channel to the complete exclusion list"""
         try:
             guild_data = self.get_guild_data(guild_id)
-            if channel_id not in guild_data["config"]["excluded_channels"]:
-                guild_data["config"]["excluded_channels"].append(channel_id)
+            channel_id_str = str(channel_id)  # Convert to string
+            if channel_id_str not in guild_data["config"]["excluded_channels"]:
+                guild_data["config"]["excluded_channels"].append(channel_id_str)
                 self.save_data()
                 print(f"Added channel {channel_id} to excluded list for guild {guild_id}")
         except Exception as e:
             print(f"Error adding excluded channel: {e}")
-    
+
     def remove_excluded_channel(self, guild_id: int, channel_id: int):
         """Remove a channel from the complete exclusion list"""
         try:
             guild_data = self.get_guild_data(guild_id)
-            if channel_id in guild_data["config"]["excluded_channels"]:
-                guild_data["config"]["excluded_channels"].remove(channel_id)
+            channel_id_str = str(channel_id)  # Convert to string
+            if channel_id_str in guild_data["config"]["excluded_channels"]:
+                guild_data["config"]["excluded_channels"].remove(channel_id_str)
                 self.save_data()
                 print(f"Removed channel {channel_id} from excluded list for guild {guild_id}")
         except Exception as e:

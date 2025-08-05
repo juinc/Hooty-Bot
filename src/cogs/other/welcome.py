@@ -222,57 +222,97 @@ class WelcomeCog(commands.Cog):
         config = self._load_config()
         guild_id_str = str(guild_id)
         
-        if guild_id_str not in config["guilds"]:
-            config["guilds"][guild_id_str] = {
-                "enabled": True,  # Cog enabled by default
-                "welcome_channel_id": None,
-                "log_channel_id": None,
-                "welcome": {
-                    "enabled": False,
-                    "content": "Welcome {user} to {guild}!",
-                    "has_embed": True,
-                    "embed": {
-                        "title": "Welcome!",
-                        "description": "Welcome {user} to **{guild}**!\nWe now have {member_count} members!",
-                        "color": 3447003,  # Blue
-                        "footer": "Enjoy your stay!"
-                    }
-                },
-                "leaving": {
-                    "enabled": False,
-                    "content": "{user_name} has left the server.",
-                    "has_embed": True,
-                    "embed": {
-                        "title": "Goodbye!",
-                        "description": "**{user_name}** has left {guild}.\nWe now have {member_count} members.",
-                        "color": 15158332,  # Red
-                        "footer": "We'll miss you!"
-                    }
-                },
-                "welcome_dm": {
-                    "enabled": False,
-                    "content": "Welcome to {guild}, {user_name}!",
-                    "has_embed": True,
-                    "embed": {
-                        "title": "Welcome!",
-                        "description": "Hello {user_name}! Welcome to **{guild}**!\n\nFeel free to explore and have fun!",
-                        "color": 3447003,  # Blue
-                        "footer": "Sent from {guild}"
-                    }
-                },
-                "leaving_dm": {
-                    "enabled": False,
-                    "content": "Goodbye {user_name}!",
-                    "has_embed": True,
-                    "embed": {
-                        "title": "Goodbye!",
-                        "description": "Thanks for being part of **{guild}**, {user_name}!\n\nYou're always welcome back!",
-                        "color": 15158332,  # Red
-                        "footer": "Sent from {guild}"
-                    }
+        # Default configuration template
+        default_config = {
+            "enabled": True,  # Cog enabled by default
+            "welcome_channel_id": None,
+            "log_channel_id": None,
+            "welcome": {
+                "enabled": False,
+                "content": "Welcome {user} to {guild}!",
+                "has_embed": True,
+                "embed": {
+                    "title": "Welcome!",
+                    "description": "Welcome {user} to **{guild}**!\nWe now have {member_count} members!",
+                    "color": 3447003,  # Blue
+                    "footer": "Enjoy your stay!"
+                }
+            },
+            "leaving": {
+                "enabled": False,
+                "content": "{user_name} has left the server.",
+                "has_embed": True,
+                "embed": {
+                    "title": "Goodbye!",
+                    "description": "**{user_name}** has left {guild}.\nWe now have {member_count} members.",
+                    "color": 15158332,  # Red
+                    "footer": "We'll miss you!"
+                }
+            },
+            "welcome_dm": {
+                "enabled": False,
+                "content": "Welcome to {guild}, {user_name}!",
+                "has_embed": True,
+                "embed": {
+                    "title": "Welcome!",
+                    "description": "Hello {user_name}! Welcome to **{guild}**!\n\nFeel free to explore and have fun!",
+                    "color": 3447003,  # Blue
+                    "footer": "Sent from {guild}"
+                }
+            },
+            "leaving_dm": {
+                "enabled": False,
+                "content": "Goodbye {user_name}!",
+                "has_embed": True,
+                "embed": {
+                    "title": "Goodbye!",
+                    "description": "Thanks for being part of **{guild}**, {user_name}!\n\nYou're always welcome back!",
+                    "color": 15158332,  # Red
+                    "footer": "Sent from {guild}"
                 }
             }
+        }
+        
+        if guild_id_str not in config["guilds"]:
+            # Create new guild config
+            config["guilds"][guild_id_str] = default_config.copy()
             self._save_config(config)
+        else:
+            # Validate and update existing config to ensure all keys exist
+            guild_config = config["guilds"][guild_id_str]
+            updated = False
+            
+            # Check and add missing top-level keys
+            for key, value in default_config.items():
+                if key not in guild_config:
+                    guild_config[key] = value
+                    updated = True
+                elif isinstance(value, dict):
+                    # Check nested dictionaries
+                    if not isinstance(guild_config[key], dict):
+                        guild_config[key] = value
+                        updated = True
+                    else:
+                        # Check each nested key
+                        for nested_key, nested_value in value.items():
+                            if nested_key not in guild_config[key]:
+                                guild_config[key][nested_key] = nested_value
+                                updated = True
+                            elif nested_key == "embed" and isinstance(nested_value, dict):
+                                # Check embed keys
+                                if not isinstance(guild_config[key][nested_key], dict):
+                                    guild_config[key][nested_key] = nested_value
+                                    updated = True
+                                else:
+                                    for embed_key, embed_value in nested_value.items():
+                                        if embed_key not in guild_config[key][nested_key]:
+                                            guild_config[key][nested_key][embed_key] = embed_value
+                                            updated = True
+            
+            # Save if we made any updates
+            if updated:
+                config["guilds"][guild_id_str] = guild_config
+                self._save_config(config)
         
         return config["guilds"][guild_id_str]
 
@@ -403,6 +443,10 @@ class WelcomeCog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member):
         """Handle member join events"""
+        # Ensure this cog instance is actually loaded
+        if self.bot.get_cog('WelcomeCog') != self:
+            return
+        
         guild_config = self._get_guild_config(member.guild.id)
         
         # Check if cog is enabled for this guild
@@ -425,6 +469,10 @@ class WelcomeCog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_remove(self, member):
         """Handle member leave events"""
+        # Ensure this cog instance is actually loaded
+        if self.bot.get_cog('WelcomeCog') != self:
+            return
+        
         guild_config = self._get_guild_config(member.guild.id)
         
         # Check if cog is enabled for this guild
@@ -636,14 +684,17 @@ class WelcomeCog(commands.Cog):
         if isinstance(ctx_or_interaction, discord.Interaction):
             member = ctx_or_interaction.user
             guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.response.send_message
+            # Respond immediately to avoid timeout
+            await ctx_or_interaction.response.defer(ephemeral=True)
         else:
             member = ctx_or_interaction.author
             guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.send
 
         if not self.has_welcome_admin_permission(member):
-            await respond("❌ You don't have permission to configure welcome settings.", ephemeral=True)
+            if isinstance(ctx_or_interaction, discord.Interaction):
+                await ctx_or_interaction.followup.send("❌ You don't have permission to configure welcome settings.", ephemeral=True)
+            else:
+                await ctx_or_interaction.send("❌ You don't have permission to configure welcome settings.")
             return
 
         config = self._load_config()
@@ -664,21 +715,26 @@ class WelcomeCog(commands.Cog):
             color=discord.Color.green() if enabled else discord.Color.red()
         )
         
-        await respond(embed=embed)
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            await ctx_or_interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await ctx_or_interaction.send(embed=embed)
 
     async def _set_channel(self, ctx_or_interaction, channel: discord.TextChannel):
         """Set welcome channel implementation"""
         if isinstance(ctx_or_interaction, discord.Interaction):
             member = ctx_or_interaction.user
             guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.response.send_message
+            await ctx_or_interaction.response.defer()
         else:
             member = ctx_or_interaction.author
             guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.send
 
         if not self.has_welcome_admin_permission(member):
-            await respond("❌ You don't have permission to configure welcome settings.", ephemeral=True)
+            if isinstance(ctx_or_interaction, discord.Interaction):
+                await ctx_or_interaction.followup.send("❌ You don't have permission to configure welcome settings.", ephemeral=True)
+            else:
+                await ctx_or_interaction.send("❌ You don't have permission to configure welcome settings.")
             return
 
         config = self._load_config()
@@ -704,21 +760,26 @@ class WelcomeCog(commands.Cog):
         config["guilds"][str(guild.id)] = guild_config
         self._save_config(config)
         
-        await respond(embed=embed)
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            await ctx_or_interaction.followup.send(embed=embed)
+        else:
+            await ctx_or_interaction.send(embed=embed)
 
     async def _set_log_channel(self, ctx_or_interaction, channel: discord.TextChannel):
         """Set log channel implementation"""
         if isinstance(ctx_or_interaction, discord.Interaction):
             member = ctx_or_interaction.user
             guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.response.send_message
+            await ctx_or_interaction.response.defer()
         else:
             member = ctx_or_interaction.author
             guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.send
 
         if not self.has_welcome_admin_permission(member):
-            await respond("❌ You don't have permission to configure welcome settings.", ephemeral=True)
+            if isinstance(ctx_or_interaction, discord.Interaction):
+                await ctx_or_interaction.followup.send("❌ You don't have permission to configure welcome settings.", ephemeral=True)
+            else:
+                await ctx_or_interaction.send("❌ You don't have permission to configure welcome settings.")
             return
 
         config = self._load_config()
@@ -744,7 +805,149 @@ class WelcomeCog(commands.Cog):
         config["guilds"][str(guild.id)] = guild_config
         self._save_config(config)
         
-        await respond(embed=embed)
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            await ctx_or_interaction.followup.send(embed=embed)
+        else:
+            await ctx_or_interaction.send(embed=embed)
+
+    async def _toggle_message(self, ctx_or_interaction, message_type: str, enabled: bool):
+        """Toggle message type"""
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            member = ctx_or_interaction.user
+            guild = ctx_or_interaction.guild
+            await ctx_or_interaction.response.defer()
+        else:
+            member = ctx_or_interaction.author
+            guild = ctx_or_interaction.guild
+
+        if not self.has_welcome_admin_permission(member):
+            if isinstance(ctx_or_interaction, discord.Interaction):
+                await ctx_or_interaction.followup.send("❌ You don't have permission to configure welcome settings.", ephemeral=True)
+            else:
+                await ctx_or_interaction.send("❌ You don't have permission to configure welcome settings.")
+            return
+
+        config = self._load_config()
+        guild_config = self._get_guild_config(guild.id)
+        
+        guild_config[message_type]["enabled"] = enabled
+        config["guilds"][str(guild.id)] = guild_config
+        self._save_config(config)
+        
+        # Log the toggle action
+        action = "enabled" if enabled else "disabled"
+        await self.log_welcome_action(f"message_{action}", guild, member, f"Type: {message_type}")
+        
+        status = "enabled" if enabled else "disabled"
+        embed = discord.Embed(
+            title=f"✅ {message_type.replace('_', ' ').title()} {status.title()}",
+            description=f"{message_type.replace('_', ' ').title()} messages have been {status}.",
+            color=discord.Color.green() if enabled else discord.Color.red()
+        )
+        
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            await ctx_or_interaction.followup.send(embed=embed)
+        else:
+            await ctx_or_interaction.send(embed=embed)
+
+    async def _test_welcome(self, ctx_or_interaction):
+        """Test welcome messages"""
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            member = ctx_or_interaction.user
+            guild = ctx_or_interaction.guild
+            await ctx_or_interaction.response.defer(ephemeral=True)
+        else:
+            member = ctx_or_interaction.author
+            guild = ctx_or_interaction.guild
+
+        if not self.has_welcome_admin_permission(member):
+            if isinstance(ctx_or_interaction, discord.Interaction):
+                await ctx_or_interaction.followup.send("❌ You don't have permission to test welcome settings.", ephemeral=True)
+            else:
+                await ctx_or_interaction.send("❌ You don't have permission to test welcome settings.")
+            return
+
+        guild_config = self._get_guild_config(guild.id)
+        
+        # Log the test action
+        await self.log_welcome_action("test_messages", guild, member)
+        
+        # Test welcome message
+        if guild_config["welcome"]["enabled"] and guild_config["welcome_channel_id"]:
+            channel = guild.get_channel(guild_config["welcome_channel_id"])
+            if channel:
+                await self._send_message(channel, guild_config["welcome"], member, guild)
+        
+        # Test welcome DM
+        if guild_config["welcome_dm"]["enabled"]:
+            await self._send_dm(member, guild_config["welcome_dm"], guild)
+        
+        embed = discord.Embed(
+            title="✅ Test Messages Sent",
+            description="Test welcome messages have been sent (if enabled).",
+            color=discord.Color.green()
+        )
+        
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            await ctx_or_interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await ctx_or_interaction.send(embed=embed)
+
+    async def _view_config(self, ctx_or_interaction):
+        """View current configuration"""
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            guild = ctx_or_interaction.guild
+            await ctx_or_interaction.response.defer(ephemeral=True)
+        else:
+            guild = ctx_or_interaction.guild
+
+        guild_config = self._get_guild_config(guild.id)
+        
+        embed = discord.Embed(
+            title="👋 Welcome System Configuration",
+            color=discord.Color.blue()
+        )
+        
+        # System status
+        system_status = "🟢 Enabled" if guild_config.get("enabled", True) else "🔴 Disabled"
+        embed.add_field(
+            name="System Status",
+            value=system_status,
+            inline=False
+        )
+        
+        # Channel settings
+        welcome_channel = guild.get_channel(guild_config["welcome_channel_id"]) if guild_config["welcome_channel_id"] else None
+        log_channel = guild.get_channel(guild_config["log_channel_id"]) if guild_config["log_channel_id"] else None
+        
+        embed.add_field(
+            name="Channels",
+            value=f"Welcome: {welcome_channel.mention if welcome_channel else 'Not set'}\nLogs: {log_channel.mention if log_channel else 'Not set'}",
+            inline=False
+        )
+        
+        # Message statuses
+        statuses = []
+        for msg_type in ["welcome", "leaving", "welcome_dm", "leaving_dm"]:
+            status = "🟢 Enabled" if guild_config[msg_type]["enabled"] else "🔴 Disabled"
+            statuses.append(f"{msg_type.replace('_', ' ').title()}: {status}")
+        
+        embed.add_field(
+            name="Message Status",
+            value="\n".join(statuses),
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Available Variables",
+            value="`{user}` - User mention\n`{user_name}` - User display name\n`{guild}` - Server name\n`{member_count}` - Member count",
+            inline=False
+        )
+        
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            await ctx_or_interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await ctx_or_interaction.send(embed=embed)
 
     async def _configure_message(self, ctx_or_interaction, message_type: str):
         """Configure message using modal"""
@@ -807,133 +1010,6 @@ class WelcomeCog(commands.Cog):
             embed.add_field(name="Embed Description", value=config["embed"]["description"][:1024], inline=False)
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    async def _toggle_message(self, ctx_or_interaction, message_type: str, enabled: bool):
-        """Toggle message type"""
-        if isinstance(ctx_or_interaction, discord.Interaction):
-            member = ctx_or_interaction.user
-            guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.response.send_message
-        else:
-            member = ctx_or_interaction.author
-            guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.send
-
-        if not self.has_welcome_admin_permission(member):
-            await respond("❌ You don't have permission to configure welcome settings.", ephemeral=True)
-            return
-
-        config = self._load_config()
-        guild_config = self._get_guild_config(guild.id)
-        
-        guild_config[message_type]["enabled"] = enabled
-        config["guilds"][str(guild.id)] = guild_config
-        self._save_config(config)
-        
-        # Log the toggle action
-        action = "enabled" if enabled else "disabled"
-        await self.log_welcome_action(f"message_{action}", guild, member, f"Type: {message_type}")
-        
-        status = "enabled" if enabled else "disabled"
-        embed = discord.Embed(
-            title=f"✅ {message_type.replace('_', ' ').title()} {status.title()}",
-            description=f"{message_type.replace('_', ' ').title()} messages have been {status}.",
-            color=discord.Color.green() if enabled else discord.Color.red()
-        )
-        
-        await respond(embed=embed)
-
-    async def _test_welcome(self, ctx_or_interaction):
-        """Test welcome messages"""
-        if isinstance(ctx_or_interaction, discord.Interaction):
-            member = ctx_or_interaction.user
-            guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.response.send_message
-        else:
-            member = ctx_or_interaction.author
-            guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.send
-
-        if not self.has_welcome_admin_permission(member):
-            await respond("❌ You don't have permission to test welcome settings.", ephemeral=True)
-            return
-
-        guild_config = self._get_guild_config(guild.id)
-        
-        # Log the test action
-        await self.log_welcome_action("test_messages", guild, member)
-        
-        # Test welcome message
-        if guild_config["welcome"]["enabled"] and guild_config["welcome_channel_id"]:
-            channel = guild.get_channel(guild_config["welcome_channel_id"])
-            if channel:
-                await self._send_message(channel, guild_config["welcome"], member, guild)
-        
-        # Test welcome DM
-        if guild_config["welcome_dm"]["enabled"]:
-            await self._send_dm(member, guild_config["welcome_dm"], guild)
-        
-        embed = discord.Embed(
-            title="✅ Test Messages Sent",
-            description="Test welcome messages have been sent (if enabled).",
-            color=discord.Color.green()
-        )
-        
-        await respond(embed=embed, ephemeral=True)
-
-    async def _view_config(self, ctx_or_interaction):
-        """View current configuration"""
-        if isinstance(ctx_or_interaction, discord.Interaction):
-            guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.response.send_message
-        else:
-            guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.send
-
-        guild_config = self._get_guild_config(guild.id)
-        
-        embed = discord.Embed(
-            title="👋 Welcome System Configuration",
-            color=discord.Color.blue()
-        )
-        
-        # System status
-        system_status = "🟢 Enabled" if guild_config.get("enabled", True) else "🔴 Disabled"
-        embed.add_field(
-            name="System Status",
-            value=system_status,
-            inline=False
-        )
-        
-        # Channel settings
-        welcome_channel = guild.get_channel(guild_config["welcome_channel_id"]) if guild_config["welcome_channel_id"] else None
-        log_channel = guild.get_channel(guild_config["log_channel_id"]) if guild_config["log_channel_id"] else None
-        
-        embed.add_field(
-            name="Channels",
-            value=f"Welcome: {welcome_channel.mention if welcome_channel else 'Not set'}\nLogs: {log_channel.mention if log_channel else 'Not set'}",
-            inline=False
-        )
-        
-        # Message statuses
-        statuses = []
-        for msg_type in ["welcome", "leaving", "welcome_dm", "leaving_dm"]:
-            status = "🟢 Enabled" if guild_config[msg_type]["enabled"] else "🔴 Disabled"
-            statuses.append(f"{msg_type.replace('_', ' ').title()}: {status}")
-        
-        embed.add_field(
-            name="Message Status",
-            value="\n".join(statuses),
-            inline=False
-        )
-        
-        embed.add_field(
-            name="Available Variables",
-            value="`{user}` - User mention\n`{user_name}` - User display name\n`{guild}` - Server name\n`{member_count}` - Member count",
-            inline=False
-        )
-        
-        await respond(embed=embed, ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(WelcomeCog(bot))

@@ -49,6 +49,7 @@ Config:
   /modconfig maxwarnings <amount>                  - Set max warnings before auto-action
   /modconfig setautoaction <action>                - Set auto-action (kick/ban/mute/timeout/none)
   /modconfig setupmute                             - Auto-create mute role
+  /modconfig setupmute                             - Auto-create hard mute role
   /modconfig banmessage-channel/toggle             - Set/toggle ban message channel
   /modconfig senddm <punishment> <on/off>          - Toggle DM notifications for punishments
 
@@ -124,6 +125,7 @@ import os
 from typing import Optional, Union
 from datetime import datetime, timedelta
 import re
+import asyncio
 from enum import Enum
 
 # Define the enums locally to avoid import issues
@@ -692,6 +694,10 @@ class ModerationCog(commands.Cog):
     @config_group.command(name="setupmute", description="Automatically create and setup mute role")
     async def setupmute_slash(self, interaction: discord.Interaction):
         await self._setup_mute_role(interaction)
+        
+    @config_group.command(name="setuphardmute", description="Automatically create and setup hardmute role")
+    async def setuphardmute_slash(self, interaction: discord.Interaction):
+        await self._setup_hardmute_role(interaction)
 
     @config_group.command(name="banmessage-channel", description="Set ban message channel")
     @app_commands.describe(channel="Channel for ban messages")
@@ -1867,7 +1873,9 @@ class ModerationCog(commands.Cog):
         if isinstance(ctx_or_interaction, discord.Interaction):
             member = ctx_or_interaction.user
             guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.response.send_message
+            # Defer to prevent timeout
+            await ctx_or_interaction.response.defer(ephemeral=True)
+            respond = ctx_or_interaction.followup.send
         else:
             member = ctx_or_interaction.author
             guild = ctx_or_interaction.guild
@@ -1907,7 +1915,7 @@ class ModerationCog(commands.Cog):
             embed.add_field(name="Reason", value=reason, inline=True)
             embed.set_footer(text=f"User ID: {user.id}")
             
-            await respond(embed=embed)
+            await respond(embed=embed, ephemeral=True)
             
             # Log action
             await self.log_moderation_action("mute", guild, member, user, reason)
@@ -1923,7 +1931,9 @@ class ModerationCog(commands.Cog):
         if isinstance(ctx_or_interaction, discord.Interaction):
             member = ctx_or_interaction.user
             guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.response.send_message
+            # Defer to prevent timeout
+            await ctx_or_interaction.response.defer(ephemeral=True)
+            respond = ctx_or_interaction.followup.send
         else:
             member = ctx_or_interaction.author
             guild = ctx_or_interaction.guild
@@ -1961,7 +1971,7 @@ class ModerationCog(commands.Cog):
             embed.add_field(name="Moderator", value=member.mention, inline=True)
             embed.set_footer(text=f"User ID: {user.id}")
             
-            await respond(embed=embed)
+            await respond(embed=embed, ephemeral=True)
             
             # Log action
             await self.log_moderation_action("unmute", guild, member, user)
@@ -2146,15 +2156,275 @@ class ModerationCog(commands.Cog):
         else:
             await respond(f"❌ {user.mention} has no warnings to clear.", ephemeral=True)
 
-    # Continue with other implementation methods (purge, lock, config, etc.)
-    # Due to length constraints, I'll provide the key remaining methods:
+    async def _setup_mute_role(self, ctx_or_interaction):
+        """Setup mute role automatically"""
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            member = ctx_or_interaction.user
+            guild = ctx_or_interaction.guild
+            # Defer immediately to prevent timeout
+            await ctx_or_interaction.response.defer(ephemeral=True)
+            respond = ctx_or_interaction.followup.send
+        else:
+            member = ctx_or_interaction.author
+            guild = ctx_or_interaction.guild
+            respond = ctx_or_interaction.send
+
+        if not self.has_mod_permission(member, 'config'):
+            await respond("❌ You don't have permission to setup mute role.", ephemeral=True)
+            return
+
+        try:
+            # Check if mute role already exists
+            config = self._load_config()
+            guild_config = self._get_guild_config(guild.id)
+            existing_mute_role_id = guild_config.get("mute_role_id")
+            
+            if existing_mute_role_id:
+                existing_role = guild.get_role(existing_mute_role_id)
+                if existing_role:
+                    await respond(f"❌ Mute role already exists: {existing_role.mention}", ephemeral=True)
+                    return
+            
+            # Create mute role
+            mute_role = await guild.create_role(
+                name="Muted",
+                color=discord.Color.dark_grey(),
+                reason="Automatic mute role setup"
+            )
+            
+            # Send initial status message
+            await respond(f"✅ Created mute role {mute_role.mention}. Now updating channel permissions...", ephemeral=True)
+            
+            # Set permissions for all channels with rate limit handling
+            updated_channels = 0
+            failed_channels = 0
+            
+            for channel in guild.channels:
+                try:
+                    if isinstance(channel, discord.TextChannel):
+                        await channel.set_permissions(mute_role, send_messages=False, add_reactions=False)
+                    elif isinstance(channel, discord.VoiceChannel):
+                        await channel.set_permissions(mute_role, speak=False)
+                    updated_channels += 1
+                    
+                    # Small delay to help with rate limiting
+                    if updated_channels % 5 == 0:
+                        await asyncio.sleep(0.5)
+                        
+                except discord.Forbidden:
+                    failed_channels += 1
+                    continue
+                except discord.HTTPException:
+                    # Handle rate limits and other HTTP errors
+                    failed_channels += 1
+                    await asyncio.sleep(1)
+                    continue
+            
+            # Save to config
+            guild_config["mute_role_id"] = mute_role.id
+            config["guilds"][str(guild.id)] = guild_config
+            self._save_config(config)
+            
+            # Create final embed
+            embed = discord.Embed(
+                title="✅ Mute Role Setup Complete",
+                color=discord.Color.green()
+            )
+            embed.add_field(
+                name="Role Created", 
+                value=mute_role.mention, 
+                inline=False
+            )
+            embed.add_field(
+                name="Channels Updated", 
+                value=f"{updated_channels} channels", 
+                inline=True
+            )
+            
+            if failed_channels > 0:
+                embed.add_field(
+                    name="Failed Updates", 
+                    value=f"{failed_channels} channels (permissions or rate limits)", 
+                    inline=True
+                )
+            
+            # Send final update
+            await respond(embed=embed, ephemeral=True)
+            
+            # Log action
+            await self.log_moderation_action(
+                "setup_mute_role", 
+                guild, 
+                member, 
+                None, 
+                f"Created mute role and updated {updated_channels} channels"
+            )
+            
+        except Exception as e:
+            try:
+                await respond(f"❌ Error setting up mute role: {e}", ephemeral=True)
+            except:
+                # If we can't respond, at least log the error
+                print(f"Failed to setup mute role in {guild.name}: {e}")
+
+
+    async def _setup_hardmute_role(self, ctx_or_interaction):
+        """Setup hardmute role automatically"""
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            member = ctx_or_interaction.user
+            guild = ctx_or_interaction.guild
+            # Defer immediately to prevent timeout
+            await ctx_or_interaction.response.defer(ephemeral=True)
+            respond = ctx_or_interaction.followup.send
+        else:
+            member = ctx_or_interaction.author
+            guild = ctx_or_interaction.guild
+            respond = ctx_or_interaction.send
+
+        if not self.has_mod_permission(member, 'config'):
+            await respond("❌ You don't have permission to setup hardmute role.", ephemeral=True)
+            return
+
+        try:
+            # Check if hardmute role already exists
+            config = self._load_config()
+            guild_config = self._get_guild_config(guild.id)
+            existing_hardmute_role_id = guild_config.get("hardmute_role_id")
+            
+            if existing_hardmute_role_id:
+                existing_role = guild.get_role(existing_hardmute_role_id)
+                if existing_role:
+                    await respond(f"❌ Hardmute role already exists: {existing_role.mention}", ephemeral=True)
+                    return
+            
+            # Create hardmute role
+            hardmute_role = await guild.create_role(
+                name="Hardmuted",
+                color=discord.Color.dark_red(),
+                reason="Automatic hardmute role setup"
+            )
+            
+            # Send initial status message
+            await respond(f"✅ Created hardmute role {hardmute_role.mention}. Now updating channel permissions...", ephemeral=True)
+            
+            # Set permissions for all channels with rate limit handling
+            updated_channels = 0
+            failed_channels = 0
+            
+            for channel in guild.channels:
+                try:
+                    if isinstance(channel, discord.TextChannel):
+                        # More restrictive permissions for hardmute
+                        await channel.set_permissions(
+                            hardmute_role,
+                            send_messages=False,
+                            add_reactions=False,
+                            create_public_threads=False,
+                            create_private_threads=False,
+                            send_messages_in_threads=False,
+                            use_external_emojis=False,
+                            use_external_stickers=False
+                        )
+                    elif isinstance(channel, discord.VoiceChannel):
+                        await channel.set_permissions(
+                            hardmute_role,
+                            speak=False,
+                            connect=False,
+                            use_voice_activation=False,
+                            stream=False
+                        )
+                    elif isinstance(channel, discord.StageChannel):
+                        await channel.set_permissions(
+                            hardmute_role,
+                            speak=False,
+                            connect=False,
+                            request_to_speak=False
+                        )
+                    elif isinstance(channel, discord.ForumChannel):
+                        await channel.set_permissions(
+                            hardmute_role,
+                            send_messages=False,
+                            create_public_threads=False,
+                            add_reactions=False
+                        )
+                    
+                    updated_channels += 1
+                    
+                    # Small delay to help with rate limiting
+                    if updated_channels % 5 == 0:
+                        await asyncio.sleep(0.5)
+                        
+                except discord.Forbidden:
+                    failed_channels += 1
+                    continue
+                except discord.HTTPException:
+                    # Handle rate limits and other HTTP errors
+                    failed_channels += 1
+                    await asyncio.sleep(1)
+                    continue
+            
+            # Save to config
+            guild_config["hardmute_role_id"] = hardmute_role.id
+            config["guilds"][str(guild.id)] = guild_config
+            self._save_config(config)
+            
+            # Create final embed
+            embed = discord.Embed(
+                title="✅ Hardmute Role Setup Complete",
+                color=discord.Color.green()
+            )
+            embed.add_field(
+                name="Role Created", 
+                value=hardmute_role.mention, 
+                inline=False
+            )
+            embed.add_field(
+                name="Channels Updated", 
+                value=f"{updated_channels} channels", 
+                inline=True
+            )
+            
+            if failed_channels > 0:
+                embed.add_field(
+                    name="Failed Updates", 
+                    value=f"{failed_channels} channels (permissions or rate limits)", 
+                    inline=True
+                )
+            
+            embed.add_field(
+                name="Permissions Set",
+                value="• No messaging/reactions\n• No voice/video\n• No thread creation\n• No connection to voice channels",
+                inline=False
+            )
+            
+            # Send final update
+            await respond(embed=embed, ephemeral=True)
+            
+            # Log action
+            await self.log_moderation_action(
+                "setup_hardmute_role", 
+                guild, 
+                member, 
+                None, 
+                f"Created hardmute role and updated {updated_channels} channels"
+            )
+            
+        except discord.Forbidden:
+            await respond("❌ I don't have permission to create roles or modify channel permissions.", ephemeral=True)
+        except Exception as e:
+            try:
+                await respond(f"❌ Error setting up hardmute role: {e}", ephemeral=True)
+            except:
+                # If we can't respond, at least log the error
+                print(f"Failed to setup hardmute role in {guild.name}: {e}")
 
     async def _purge_messages(self, ctx_or_interaction, amount: int):
-        """Purge messages implementation"""
+        """Purge a specified number of messages"""
         if isinstance(ctx_or_interaction, discord.Interaction):
             member = ctx_or_interaction.user
             channel = ctx_or_interaction.channel
-            respond = ctx_or_interaction.response.send_message
+            await ctx_or_interaction.response.defer(ephemeral=True)
+            respond = ctx_or_interaction.followup.send
         else:
             member = ctx_or_interaction.author
             channel = ctx_or_interaction.channel
@@ -2169,13 +2439,19 @@ class ModerationCog(commands.Cog):
             return
 
         try:
-            deleted = await channel.purge(limit=amount, check=lambda m: (datetime.now() - m.created_at).days < 14)
+            # Use discord.utils.utcnow() for timezone-aware datetime
+            cutoff_time = discord.utils.utcnow() - timedelta(days=14)
+            
+            def check(m):
+                return m.created_at > cutoff_time
+            
+            deleted = await channel.purge(limit=amount, check=check)
             
             embed = discord.Embed(
                 title="🧹 Messages Purged",
                 description=f"Purged {len(deleted)} messages from {channel.mention}.",
                 color=discord.Color.blue(),
-                timestamp=datetime.now()
+                timestamp=discord.utils.utcnow()
             )
             embed.add_field(name="Moderator", value=member.mention, inline=True)
             
@@ -2189,76 +2465,64 @@ class ModerationCog(commands.Cog):
         except Exception as e:
             await respond(f"❌ Error purging messages: {e}", ephemeral=True)
 
-    async def _setup_mute_role(self, ctx_or_interaction):
-        """Setup mute role automatically"""
+    async def _purge_user_messages(self, ctx_or_interaction, user: discord.Member, amount: int):
+        """Purge messages from a specific user"""
         if isinstance(ctx_or_interaction, discord.Interaction):
             member = ctx_or_interaction.user
-            guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.response.send_message
+            channel = ctx_or_interaction.channel
+            await ctx_or_interaction.response.defer(ephemeral=True)
+            respond = ctx_or_interaction.followup.send
         else:
             member = ctx_or_interaction.author
-            guild = ctx_or_interaction.guild
+            channel = ctx_or_interaction.channel
             respond = ctx_or_interaction.send
 
-        if not self.has_mod_permission(member, 'config'):
-            await respond("❌ You don't have permission to setup mute role.", ephemeral=True)
+        if not self.has_mod_permission(member, 'purge'):
+            await respond("❌ You don't have permission to purge messages.", ephemeral=True)
+            return
+
+        if amount < 1 or amount > 100:
+            await respond("❌ Amount must be between 1 and 100.", ephemeral=True)
             return
 
         try:
-            # Create mute role
-            mute_role = await guild.create_role(
-                name="Muted",
-                color=discord.Color.dark_grey(),
-                reason="Automatic mute role setup"
-            )
+            # Use discord.utils.utcnow() for timezone-aware datetime
+            cutoff_time = discord.utils.utcnow() - timedelta(days=14)
             
-            # Set permissions for all channels
-            updated_channels = 0
-            for channel in guild.channels:
-                try:
-                    if isinstance(channel, discord.TextChannel):
-                        await channel.set_permissions(mute_role, send_messages=False, add_reactions=False)
-                    elif isinstance(channel, discord.VoiceChannel):
-                        await channel.set_permissions(mute_role, speak=False)
-                    updated_channels += 1
-                except discord.Forbidden:
-                    continue
+            def check(m):
+                return m.author == user and m.created_at > cutoff_time
             
-            # Save to config
-            config = self._load_config()
-            guild_config = self._get_guild_config(guild.id)
-            guild_config["mute_role_id"] = mute_role.id
-            config["guilds"][str(guild.id)] = guild_config
-            self._save_config(config)
+            deleted = await channel.purge(limit=amount, check=check)
             
             embed = discord.Embed(
-                title="✅ Mute Role Setup Complete",
-                description=f"Created role {mute_role.mention} and updated permissions for {updated_channels} channels.",
-                color=discord.Color.green()
+                title="🧹 User Messages Purged",
+                description=f"Purged {len(deleted)} messages from {user.mention} in {channel.mention}.",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow()
             )
+            embed.add_field(name="Moderator", value=member.mention, inline=True)
             
-            await respond(embed=embed)
+            await respond(embed=embed, ephemeral=True)
             
             # Log action
-            await self.log_moderation_action("setup_mute_role", guild, member, None, f"Created mute role and updated {updated_channels} channels")
+            await self.log_moderation_action("purge_user", channel.guild, member, user, f"{len(deleted)} messages in #{channel.name}")
             
         except discord.Forbidden:
-            await respond("❌ I don't have permission to create roles or manage channel permissions.", ephemeral=True)
+            await respond("❌ I don't have permission to delete messages.", ephemeral=True)
         except Exception as e:
-            await respond(f"❌ Error setting up mute role: {e}", ephemeral=True)
+            await respond(f"❌ Error purging messages: {e}", ephemeral=True)
 
     async def _purge_user_global(self, ctx_or_interaction, user: discord.Member, amount: int):
         """Purge messages from a user across the entire server"""
         if isinstance(ctx_or_interaction, discord.Interaction):
             member = ctx_or_interaction.user
             guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.response.send_message
-            followup = ctx_or_interaction.followup.send
+            await ctx_or_interaction.response.defer(ephemeral=True)
+            respond = ctx_or_interaction.followup.send
         else:
             member = ctx_or_interaction.author
             guild = ctx_or_interaction.guild
             respond = ctx_or_interaction.send
-            followup = ctx_or_interaction.send
 
         if not self.has_mod_permission(member, 'purge'):
             await respond("❌ You don't have permission to purge messages.", ephemeral=True)
@@ -2274,15 +2538,22 @@ class ModerationCog(commands.Cog):
         channels_affected = 0
 
         try:
+            # Use discord.utils.utcnow() for timezone-aware datetime
+            cutoff_time = discord.utils.utcnow() - timedelta(days=14)
+            
             for channel in guild.text_channels:
                 try:
                     def check(m):
-                        return m.author == user and (datetime.now() - m.created_at).days < 14
+                        return m.author == user and m.created_at > cutoff_time
                     
                     deleted = await channel.purge(limit=amount, check=check)
                     if deleted:
                         total_deleted += len(deleted)
                         channels_affected += 1
+                        
+                    # Small delay to help with rate limiting
+                    await asyncio.sleep(0.1)
+                        
                 except discord.Forbidden:
                     continue
                 except Exception:
@@ -2292,24 +2563,25 @@ class ModerationCog(commands.Cog):
                 title="🧹 Global User Messages Purged",
                 description=f"Purged {total_deleted} messages from {user.mention} across {channels_affected} channels.",
                 color=discord.Color.blue(),
-                timestamp=datetime.now()
+                timestamp=discord.utils.utcnow()
             )
             embed.add_field(name="Moderator", value=member.mention, inline=True)
             
-            await followup(embed=embed, ephemeral=True)
+            await respond(embed=embed, ephemeral=True)
             
             # Log action
             await self.log_moderation_action("global_purge_user", guild, member, user, f"{total_deleted} messages across {channels_affected} channels")
             
         except Exception as e:
-            await followup(f"❌ Error during global purge: {e}", ephemeral=True)
+            await respond(f"❌ Error during global purge: {e}", ephemeral=True)
 
     async def _purge_bot_messages(self, ctx_or_interaction, amount: int):
         """Purge bot messages"""
         if isinstance(ctx_or_interaction, discord.Interaction):
             member = ctx_or_interaction.user
             channel = ctx_or_interaction.channel
-            respond = ctx_or_interaction.response.send_message
+            await ctx_or_interaction.response.defer(ephemeral=True)
+            respond = ctx_or_interaction.followup.send
         else:
             member = ctx_or_interaction.author
             channel = ctx_or_interaction.channel
@@ -2324,8 +2596,11 @@ class ModerationCog(commands.Cog):
             return
 
         try:
+            # Use discord.utils.utcnow() for timezone-aware datetime
+            cutoff_time = discord.utils.utcnow() - timedelta(days=14)
+            
             def check(m):
-                return m.author.bot and (datetime.now() - m.created_at).days < 14
+                return m.author.bot and m.created_at > cutoff_time
             
             deleted = await channel.purge(limit=amount, check=check)
             
@@ -2333,7 +2608,7 @@ class ModerationCog(commands.Cog):
                 title="🤖 Bot Messages Purged",
                 description=f"Purged {len(deleted)} bot messages from {channel.mention}.",
                 color=discord.Color.blue(),
-                timestamp=datetime.now()
+                timestamp=discord.utils.utcnow()
             )
             embed.add_field(name="Moderator", value=member.mention, inline=True)
             
@@ -2509,7 +2784,9 @@ class ModerationCog(commands.Cog):
         if isinstance(ctx_or_interaction, discord.Interaction):
             member = ctx_or_interaction.user
             guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.response.send_message
+            # Defer to prevent timeout
+            await ctx_or_interaction.response.defer(ephemeral=True)
+            respond = ctx_or_interaction.followup.send
         else:
             member = ctx_or_interaction.author
             guild = ctx_or_interaction.guild
@@ -2527,45 +2804,24 @@ class ModerationCog(commands.Cog):
         hardmute_role_id = guild_config.get("hardmute_role_id")
         
         if not hardmute_role_id:
-            # Create hardmute role if it doesn't exist
-            try:
-                hardmute_role = await guild.create_role(
-                    name="Hardmuted",
-                    color=discord.Color.dark_red(),
-                    reason="Hardmute role creation"
-                )
-                
-                # Set permissions for all channels
-                for channel in guild.channels:
-                    try:
-                        await channel.set_permissions(hardmute_role, 
-                                                    send_messages=False,
-                                                    speak=False,
-                                                    add_reactions=False,
-                                                    connect=False)
-                    except discord.Forbidden:
-                        continue
-                
-                # Save role ID
-                guild_config["hardmute_role_id"] = hardmute_role.id
-                config = self._load_config()
-                config["guilds"][str(guild.id)] = guild_config
-                self._save_config(config)
-                
-            except discord.Forbidden:
-                await respond("❌ I don't have permission to create roles.", ephemeral=True)
-                return
-        else:
-            hardmute_role = guild.get_role(hardmute_role_id)
-            if not hardmute_role:
-                await respond("❌ Hardmute role not found. Please reconfigure.", ephemeral=True)
-                return
+            await respond("❌ No hardmute role configured. Use `/modconfig setuphardmute` to create one.", ephemeral=True)
+            return
+
+        hardmute_role = guild.get_role(hardmute_role_id)
+        if not hardmute_role:
+            await respond("❌ Hardmute role not found. Please reconfigure it.", ephemeral=True)
+            return
+
+        # Check if user is already hardmuted
+        db = self._load_db()
+        guild_id_str = str(guild.id)
+        
+        if guild_id_str in db["hardmuted_users"] and str(user.id) in db["hardmuted_users"][guild_id_str]:
+            await respond("❌ This user is already hard muted.", ephemeral=True)
+            return
 
         try:
-            # Store user's roles
-            db = self._load_db()
-            guild_id_str = str(guild.id)
-            
+            # Store user's roles before removing them
             if guild_id_str not in db["hardmuted_users"]:
                 db["hardmuted_users"][guild_id_str] = {}
             
@@ -2578,7 +2834,7 @@ class ModerationCog(commands.Cog):
             }
             self._save_db(db)
             
-            # Remove all roles and add hardmute role
+            await self.send_dm_notification(user, "hardmute", reason, guild)
             await user.edit(roles=[hardmute_role], reason=f"Hardmuted by {member}: {reason}")
             
             embed = discord.Embed(
@@ -2592,7 +2848,7 @@ class ModerationCog(commands.Cog):
             embed.add_field(name="Roles Removed", value=str(len(user_roles)), inline=True)
             embed.set_footer(text=f"User ID: {user.id}")
             
-            await respond(embed=embed)
+            await respond(embed=embed, ephemeral=True)
             
             # Log action
             await self.log_moderation_action("hardmute", guild, member, user, reason)
@@ -2608,7 +2864,9 @@ class ModerationCog(commands.Cog):
         if isinstance(ctx_or_interaction, discord.Interaction):
             member = ctx_or_interaction.user
             guild = ctx_or_interaction.guild
-            respond = ctx_or_interaction.response.send_message
+            # Defer to prevent timeout
+            await ctx_or_interaction.response.defer(ephemeral=True)
+            respond = ctx_or_interaction.followup.send
         else:
             member = ctx_or_interaction.author
             guild = ctx_or_interaction.guild
@@ -2618,24 +2876,41 @@ class ModerationCog(commands.Cog):
             await respond("❌ You don't have permission to remove hard mutes.", ephemeral=True)
             return
 
-        # Get stored roles
+        guild_config = self._get_guild_config(guild.id)
+        hardmute_role_id = guild_config.get("hardmute_role_id")
+        
+        if not hardmute_role_id:
+            await respond("❌ No hardmute role configured.", ephemeral=True)
+            return
+
+        hardmute_role = guild.get_role(hardmute_role_id)
+        if not hardmute_role:
+            await respond("❌ Hardmute role not found.", ephemeral=True)
+            return
+
+        # Check if user is hardmuted in database
         db = self._load_db()
         guild_id_str = str(guild.id)
         
         if guild_id_str not in db["hardmuted_users"] or str(user.id) not in db["hardmuted_users"][guild_id_str]:
-            await respond("❌ This user is not hard muted or data not found.", ephemeral=True)
+            await respond("❌ This user is not hard muted.", ephemeral=True)
             return
 
         try:
+            # Get stored roles
             hardmute_data = db["hardmuted_users"][guild_id_str][str(user.id)]
             stored_role_ids = hardmute_data["roles"]
             
             # Get valid roles that still exist
             roles_to_restore = []
+            missing_roles = 0
+            
             for role_id in stored_role_ids:
                 role = guild.get_role(role_id)
                 if role:
                     roles_to_restore.append(role)
+                else:
+                    missing_roles += 1
             
             # Add back the default role
             roles_to_restore.append(guild.default_role)
@@ -2654,9 +2929,13 @@ class ModerationCog(commands.Cog):
             )
             embed.add_field(name="Moderator", value=member.mention, inline=True)
             embed.add_field(name="Roles Restored", value=str(len(roles_to_restore) - 1), inline=True)
+            
+            if missing_roles > 0:
+                embed.add_field(name="Missing Roles", value=f"{missing_roles} roles no longer exist", inline=True)
+            
             embed.set_footer(text=f"User ID: {user.id}")
             
-            await respond(embed=embed)
+            await respond(embed=embed, ephemeral=True)
             
             # Log action
             await self.log_moderation_action("unhardmute", guild, member, user)
@@ -3326,49 +3605,6 @@ class ModerationCog(commands.Cog):
         embed.add_field(name=f"Roles ({len(roles)})", value=" ".join(roles) if roles else "None", inline=False)
         
         await respond(embed=embed, ephemeral=True)
-
-    async def _purge_user_messages(self, ctx_or_interaction, user: discord.Member, amount: int):
-        """Purge messages from a specific user"""
-        if isinstance(ctx_or_interaction, discord.Interaction):
-            member = ctx_or_interaction.user
-            channel = ctx_or_interaction.channel
-            respond = ctx_or_interaction.response.send_message
-        else:
-            member = ctx_or_interaction.author
-            channel = ctx_or_interaction.channel
-            respond = ctx_or_interaction.send
-
-        if not self.has_mod_permission(member, 'purge'):
-            await respond("❌ You don't have permission to purge messages.", ephemeral=True)
-            return
-
-        if amount < 1 or amount > 100:
-            await respond("❌ Amount must be between 1 and 100.", ephemeral=True)
-            return
-
-        try:
-            def check(m):
-                return m.author == user and (datetime.now() - m.created_at).days < 14
-            
-            deleted = await channel.purge(limit=amount, check=check)
-            
-            embed = discord.Embed(
-                title="🧹 User Messages Purged",
-                description=f"Purged {len(deleted)} messages from {user.mention} in {channel.mention}.",
-                color=discord.Color.blue(),
-                timestamp=datetime.now()
-            )
-            embed.add_field(name="Moderator", value=member.mention, inline=True)
-            
-            await respond(embed=embed, ephemeral=True)
-            
-            # Log action
-            await self.log_moderation_action("purge_user", channel.guild, member, user, f"{len(deleted)} messages in #{channel.name}")
-            
-        except discord.Forbidden:
-            await respond("❌ I don't have permission to delete messages.", ephemeral=True)
-        except Exception as e:
-            await respond(f"❌ Error purging messages: {e}", ephemeral=True)
 
     async def _lock_channel(self, ctx_or_interaction, reason: str):
         """Lock channel implementation"""
